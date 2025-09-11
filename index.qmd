@@ -1,0 +1,771 @@
+---
+title: "CEVE 543 Fall 2025 Lab 3: GEV Inference"
+subtitle: "Estimating GEV parameters and characterizing uncertainty"
+author: James Doss-Gollin
+date: "2025-09-12"
+type: "lab"
+module: 1
+week: 3
+topics: ["Parameter estimation", "Turing.jl", "Confidence intervals"]
+objectives:
+  - "Implement GEV parameter estimation using Turing.jl"
+  - "Compare results with traditional methods using Extremes.jl"
+  - "Calculate confidence intervals for return levels"
+ps_connection: "Provides GEV fitting tools and uncertainty quantification for PS1 Task 1"
+
+engine: julia
+
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-block-bg: "#f8f8f8"
+    code-block-border-left: "#e1e4e5"
+    theme: simplex
+    number-sections: true
+    fig-format: svg
+    code-annotations: hover
+  typst:
+    fontsize: 11pt
+    margin: 
+      x: 1in
+      y: 1in
+    number-sections: true
+    fig-format: svg
+    echo: false
+    code-annotations: false
+
+execute: 
+  cache: true
+  freeze: auto
+
+# Code formatting options
+code-overflow: wrap
+code-line-numbers: false
+code-block-font-size: "0.85em"
+---
+
+## Do Before Lab {.unnumbered}
+
+1. **Accept the assignment.** Use the GitHub Classroom link posted on Canvas to "accept" the assignment, which will give you your own GitHub repository.
+1. **Clone your repository** to your computer using GitHub Desktop or the command line.
+1. **Open the repository in VS Code** directly from VS Code, GitHub Desktop, or your command line.
+1. **Activate the Julia environment.** In VS Code, open the command palette (View → Command Palette) and type "Julia: Start REPL". Alternatively, run `julia --project=.` in the terminal, then run `using Pkg; Pkg.instantiate()` to install required packages. The easiest method is to type `]` in the REPL to enter package mode, then type `instantiate`.
+1. **Verify rendering works.** Run `quarto render index.qmd` in your terminal - it should create both PDF and HTML documents.
+
+## Do During Lab {.unnumbered}
+
+This lab guides you through comparing Bayesian and traditional approaches to GEV parameter estimation:
+
+1. **Choose and analyze a station** with adequate data for GEV fitting
+1. **Compare fitting methods** using both Extremes.jl and Turing.jl 
+1. **Analyze multiple stations** by incorporating nearby stations into your analysis
+1. **Explore uncertainty** through a synthetic data experiment
+
+As with previous labs, you do not need to write code from scratch -- just modify and run provided code.
+
+To submit your work, push your changes to GitHub, render to PDF, and upload the PDF to Canvas.
+
+## Your Analysis {.unnumbered}
+
+::: {.callout-important}
+## Instructions
+Delete this entire section (including the "Do Before Lab" and "Do During Lab" sections above) and replace it with your analysis responses. Use the numbered format below for your final submission.
+:::
+
+**Response 1:** Station Selection Rationale  
+*Replace this text with 2-3 sentences explaining why you chose your particular station for GEV analysis. Address factors like data length, location relevance, and data quality.*
+
+**Response 2:** Fitting Methods Comparison  
+*Replace this text with 3-4 sentences comparing the Extremes.jl and Turing.jl approaches. Discuss parameter differences, return level estimates, and potential reasons for any discrepancies.*
+
+**Response 3:** Multi-Station Geographic Analysis  
+*Replace this text with 4-5 sentences analyzing the spatial patterns in your multi-station comparison. Address the credibility of similarities/differences and explain how geographic factors might influence extreme precipitation patterns.*
+
+**Response 4:** Uncertainty and Sample Size Insights  
+*Replace this text with 3-4 sentences interpreting your synthetic experiment results. Discuss adequate sample sizes for reliable GEV estimation and implications for infrastructure design.*
+
+**Response 5:** Final Synthesis  
+*Replace this text with 2-3 sentences synthesizing your key findings and their broader implications for climate risk assessment and engineering applications.*
+
+## Data Setup and Station Selection
+
+### Loading Required Packages
+
+First, we need to load all the Julia packages we'll use in this analysis:
+
+```{julia}
+#| output: false
+# Core packages
+using Downloads
+using TidierData
+using DataFrames
+using Extremes
+using Turing
+using Optim
+using ColorSchemes
+using CairoMakie
+using GeoMakie
+
+using Makie.Unitful
+using Makie.Dates
+
+ENV["DATAFRAMES_ROWS"] = 5
+
+# Configure plotting backend
+CairoMakie.activate!(type = "svg")
+
+# utility functions
+include("util.jl")
+
+rainfall_conversion = Makie.UnitfulConversion(u"inch")
+```
+
+### Loading NOAA Precipitation Data
+
+Like previous labs, we'll download and read the Texas precipitation data:
+
+```{julia}
+fname = "dur01d_ams_na14v11.txt"
+url = "https://hdsc.nws.noaa.gov/pub/hdsc/data/tx/dur01d_ams_na14v11.txt"
+
+if !isfile(fname)  # <1>
+	Downloads.download(url, fname)  # <2>
+end
+
+stations, rainfall_data = read_noaa_data(fname)  # <3>
+display(stations)
+display(rainfall_data)
+```
+
+1. Check if data file already exists locally
+2. Download the file if it doesn't exist
+3. Read and parse the NOAA precipitation data
+
+### Choosing Your Station
+
+For GEV analysis, we need sufficient data. Let's examine stations with longer records:
+
+```{julia}
+# Show stations ordered by data availability
+@chain stations begin
+	@arrange(desc(years_of_data))  # <1>
+	@slice_head(n = 10)  # <2>
+end
+```
+
+1. Sort stations by years of data in descending order
+2. Select the top 10 stations with most data
+
+**Choose YOUR OWN station for analysis.** 
+
+
+```{julia}
+# REQUIRED: You MUST choose a different station than the default
+my_stnid = 111
+
+my_station = @chain stations begin
+	@filter(stnid == !!my_stnid)
+	first
+end
+
+# Extract rainfall data for your chosen station
+my_precip = @chain rainfall_data begin
+	@filter(stnid == !!my_stnid)  # <1>
+	@arrange(date)  # <2>
+end
+
+println("Selected station: $(my_station.noaa_id) - $(my_station.name)")
+println("Years of data: $(my_station.years_of_data)")
+```
+
+1. Filter rainfall data for your chosen station using station ID
+2. Sort the data chronologically by date
+
+::: {.callout-note}
+## Response 1
+Explain why you chose this particular station and what makes it suitable for GEV analysis. Consider factors like data length, geographic location, and data completeness.
+:::
+
+Let's visualize your chosen station's rainfall time series:
+
+```{julia}
+function plot_time_series(station_row, rainfall_df)
+	fig = Figure(size = (800, 400))
+	ax = Axis(fig[1, 1],
+		ylabel = "Annual Maximum 24-Hour Rainfall [inch]",
+		title = "$(station_row.noaa_id): $(station_row.name)",
+		dim2_conversion = rainfall_conversion)
+
+	lines!(ax, rainfall_df.date, rainfall_df.rainfall, color = :blue, linewidth = 2)
+	scatter!(ax, rainfall_df.date, rainfall_df.rainfall, markersize = 10, marker = :circle, strokewidth = 2, color = :transparent)
+
+	fig
+end
+
+plot_time_series(my_station, my_precip)
+```
+
+## GEV Fitting: Multiple Approaches
+
+We'll compare different approaches to fitting GEV distributions to understand how estimation methods affect our results.
+
+### MLE with Extremes.jl
+
+First, let's fit a GEV distribution using maximum likelihood estimation (MLE) with [`Extremes.jl`](https://jojal5.github.io/Extremes.jl/stable/):
+
+```{julia}
+# Extract clean data for fitting
+y = collect(skipmissing(ustrip.(u"inch", my_precip.rainfall)))  # <1>
+
+# Fit GEV using maximum likelihood estimation (MLE)
+extremes_fit = gevfit(y)  # <2>
+
+# Extract parameters 
+μ_extremes = location(extremes_fit)[1]  # <3>
+σ_extremes = scale(extremes_fit)[1]     # <4>  
+ξ_extremes = shape(extremes_fit)[1]     # <5>
+
+# Display parameters in a DataFrame
+params_extremes = DataFrame(
+	Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+	Value = [round(μ_extremes, digits = 3), round(σ_extremes, digits = 3), round(ξ_extremes, digits = 3)],
+)
+println("Extremes.jl GEV parameters:")
+params_extremes
+
+# Create distribution object for analysis
+extremes_dist = GeneralizedExtremeValue(μ_extremes, σ_extremes, ξ_extremes)  # <6>
+```
+
+1. Convert rainfall data to plain numbers, removing units and missing values
+2. Fit GEV distribution using maximum likelihood estimation (MLE)
+3. Extract location parameter (μ) from the fitted model
+4. Extract scale parameter (σ) from the fitted model
+5. Extract shape parameter (ξ) from the fitted model
+6. Create a distribution object for further analysis and plotting
+
+### Method-of-Moments with Extremes.jl
+
+Now let's try the method-of-moments approach using probability-weighted moments (PWM):
+
+```{julia}
+# Fit GEV using probability-weighted moments (method-of-moments)
+extremes_pwm_fit = gevfitpwm(y)  # <1>
+
+# Extract parameters
+μ_extremes_pwm = location(extremes_pwm_fit)[1]  # <2>
+σ_extremes_pwm = scale(extremes_pwm_fit)[1]     # <3>
+ξ_extremes_pwm = shape(extremes_pwm_fit)[1]     # <4>
+
+# Display parameters in a DataFrame
+params_extremes_pwm = DataFrame(
+	Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+	Value = [round(μ_extremes_pwm, digits = 3), round(σ_extremes_pwm, digits = 3), round(ξ_extremes_pwm, digits = 3)],
+)
+println("Extremes.jl PWM parameters:")
+params_extremes_pwm
+
+# Create distribution object
+extremes_pwm_dist = GeneralizedExtremeValue(μ_extremes_pwm, σ_extremes_pwm, ξ_extremes_pwm)  # <5>
+```
+
+1. Fit GEV distribution using probability-weighted moments (PWM) method
+2. Extract location parameter (μ) from the PWM fitted model
+3. Extract scale parameter (σ) from the PWM fitted model
+4. Extract shape parameter (ξ) from the PWM fitted model
+5. Create distribution object for PWM approach
+
+### Bayesian Approach with Turing.jl
+
+Now let's implement a Bayesian approach using Turing.jl with wide priors:
+
+```{julia}
+# Define Bayesian GEV model
+@model function gev_model(y)
+	# Priors informed by data characteristics
+	μ ~ Normal(0, 10)           # <1>
+	log_σ ~ Normal(0, 10)       # <2>
+	ξ ~ Normal(0.0, 0.25)       # <3>
+
+	σ = exp(log_σ)              # <4>
+
+	y .~ GeneralizedExtremeValue(μ, σ, ξ) # <5>
+end
+
+# Fit the model using MLE
+turing_fit = maximum_likelihood(gev_model(y), NelderMead(); initial_params = [0.0, 1.0, 0.0])  # <6>
+
+# Extract parameters
+μ_turing = turing_fit.values[:μ]           # <7>
+σ_turing = exp(turing_fit.values[:log_σ])  # <8>
+ξ_turing = turing_fit.values[:ξ]           # <9>
+
+# Display parameters in a DataFrame
+params_turing = DataFrame(
+	Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+	Value = [round(μ_turing, digits = 3), round(σ_turing, digits = 3), round(ξ_turing, digits = 3)],
+)
+println("Turing.jl GEV parameters (MLE):")
+params_turing
+
+# Create distribution object
+turing_dist = GeneralizedExtremeValue(μ_turing, σ_turing, ξ_turing)  # <10>
+```
+
+1. Location parameter with wide prior
+2. Log-scale parameter with wide prior (ensures positive scale)
+3. Shape parameter with conservative prior around zero
+4. Transform to positive scale parameter
+5. Vectorized likelihood for the GEV distribution
+6. Maximum likelihood estimation using updated Turing.jl syntax per [docs](https://turinglang.org/docs/usage/mode-estimation/#controlling-the-optimisation-process)
+7. Extract location parameter
+8. Extract and transform scale parameter
+9. Extract shape parameter
+10. Create distribution object for analysis
+
+### Comparing All Three Methods
+
+Let's compare the fitted parameters and return level estimates across all three approaches:
+
+```{julia}
+# Compare parameters
+params_comparison = DataFrame(
+	Method = ["Extremes MLE", "Extremes PWM", "Turing MLE"],
+	μ = [round(μ_extremes, digits = 3), round(μ_extremes_pwm, digits = 3), round(μ_turing, digits = 3)],
+	σ = [round(σ_extremes, digits = 3), round(σ_extremes_pwm, digits = 3), round(σ_turing, digits = 3)],
+	ξ = [round(ξ_extremes, digits = 3), round(ξ_extremes_pwm, digits = 3), round(ξ_turing, digits = 3)],
+)
+params_comparison
+
+# Compare return levels
+return_periods = [5, 10, 25, 50, 100]
+return_levels_comparison = DataFrame(
+	T_years = return_periods,
+	Extremes_MLE = [round(quantile(extremes_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+	Extremes_PWM = [round(quantile(extremes_pwm_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+	Turing_MLE = [round(quantile(turing_dist, 1 - 1 / T), digits = 2) for T in return_periods],
+)
+return_levels_comparison
+```
+
+Now let's visualize all three fits together:
+
+```{julia}
+function plot_gev_comparison(station_data, extremes_dist, extremes_pwm_dist, turing_dist, station_info)
+	fig = Figure()
+	ax = Axis(fig[1, 1],
+		xlabel = "Return Period (years)",
+		ylabel = "Return Level (inches)",
+		title = "GEV Fit Comparison\n$(station_info.noaa_id): $(station_info.name)",
+		xscale = log10)  # <1>
+
+	# Plot theoretical curves
+	T_smooth = create_return_period_range(1.1, 250, 100)  # <2>
+
+	# Extremes.jl MLE curve
+	levels_extremes = [quantile(extremes_dist, 1 - 1 / T) for T in T_smooth]  # <3>
+	lines!(ax, T_smooth, levels_extremes, color = :blue, linewidth = 2, label = "Extremes MLE")
+
+	# Extremes.jl PWM curve
+	levels_extremes_pwm = [quantile(extremes_pwm_dist, 1 - 1 / T) for T in T_smooth]  # <4>
+	lines!(ax, T_smooth, levels_extremes_pwm, color = :green, linewidth = 2, linestyle = :dot, label = "Extremes PWM")
+
+	# Turing.jl curve  
+	levels_turing = [quantile(turing_dist, 1 - 1 / T) for T in T_smooth]  # <5>
+	lines!(ax, T_smooth, levels_turing, color = :red, linewidth = 2, linestyle = :dash, label = "Turing MLE")
+
+	# Empirical data points
+	emp_levels, emp_periods = weibull_plotting_positions(station_data.rainfall)  # <6>
+	scatter!(ax, emp_periods, emp_levels,
+		color = :black, markersize = 8, marker = :circle,
+		label = "Observed Data")
+
+	# Standard return periods
+	return_periods = [5, 10, 25, 50, 100, 250]
+	ax.xticks = return_periods  # <7>
+
+	axislegend(ax, position = :rb)  # <8>
+	return fig
+end
+
+plot_gev_comparison(my_precip, extremes_dist, extremes_pwm_dist, turing_dist, my_station)
+```
+
+1. Use logarithmic scale for x-axis (return periods)
+2. Create smooth range of return periods for plotting curves
+3. Calculate return levels for Extremes.jl MLE fit across all return periods
+4. Calculate return levels for Extremes.jl PWM fit across all return periods
+5. Calculate return levels for Turing.jl fit across all return periods
+6. Calculate empirical plotting positions from observed data
+7. Set x-axis tick marks at standard return periods
+8. Add legend in bottom-right corner
+
+::: {.callout-note}
+## Response 2
+Analyze how the three fitting approaches compare. Address parameter differences, return level estimates, and provide explanations for any discrepancies you observe between the MLE, PWM, and Bayesian methods.
+:::
+
+## Multi-Station Analysis
+
+Individual station analyses can be limited by sample size. Let's expand our analysis by incorporating data from nearby stations.
+
+### Finding Nearest Stations
+
+```{julia}
+# Find the 5 nearest stations to your chosen station
+nearest_stations = find_nearest_stations(my_station, stations, 5)  # <1>
+
+target_lon = my_station.longitude
+target_lat = my_station.latitude
+nearest_with_distance = @chain nearest_stations begin
+	@mutate(distance_km = calc_distance(longitude, latitude, !!target_lon, !!target_lat)) # <2>
+	@select(noaa_id, name, distance_km, years_of_data)  # <3>
+end
+
+println("Nearest stations to $(my_station.noaa_id):")
+display(nearest_with_distance)
+```
+
+1. Find the 5 geographically closest stations to your chosen station
+2. Calculate distance in kilometers from your station to each nearby station
+3. Select relevant columns for display: station ID, name, distance, and data years
+
+### Fitting GEV to Multiple Stations
+
+Let's fit GEV distributions to all stations (your chosen station plus the 5 nearest):
+
+```{julia}
+#| output: false
+# Function to fit GEV to a single station
+function fit_station_gev(station_row)
+	target_stnid = station_row.stnid  # <1>
+	st_precip = @chain rainfall_data begin
+		@filter(stnid == !!target_stnid)  # <2>
+		@arrange(date)  # <3>
+	end
+	y_st = collect(skipmissing(ustrip.(u"inch", st_precip.rainfall)))
+
+	# Fit using Extremes.jl
+	extremes_fit_st = gevfit(y_st)
+	μ_st = location(extremes_fit_st)[1]
+	σ_st = scale(extremes_fit_st)[1]
+	ξ_st = shape(extremes_fit_st)[1]
+
+	return (
+		distribution = GeneralizedExtremeValue(μ_st, σ_st, ξ_st),
+		info = (noaa_id = station_row.noaa_id, n_years = length(y_st)),
+	)
+end
+
+# Fit all stations using map
+station_results = map(fit_station_gev, eachrow(nearest_stations))  # <4>
+station_fits = [r.distribution for r in station_results]  # <5>
+station_info = [r.info for r in station_results]  # <6>
+```
+
+1. Extract station ID first to avoid variable scoping issues
+2. Filter rainfall data for this specific station
+3. Sort the data chronologically by date
+4. Apply the fitting function to each of the nearest stations
+5. Extract the fitted GEV distribution objects from results
+6. Extract station information (ID and years of data) from results
+
+Let's visualize the geographic distribution of these stations:
+
+```{julia}
+function plot_station_map(my_station, nearest_stations)
+	# Create map plot with all stations
+	fig = Figure(size = (800, 600))
+	ga = GeoAxis(fig[1, 1]; source = "+proj=latlong", dest = "+proj=merc",  # <1>
+		title = "Selected Stations for GEV Analysis", xgridvisible = false, ygridvisible = false)
+
+	# Add US states (white with black borders)
+	states = GeoMakie.naturalearth("admin_1_states_provinces_lakes", 110)  # <2>
+	poly!(ga, states.geometry;
+		strokecolor = :black, strokewidth = 1, color = :white)
+
+	# Plot all stations as small dots colored by years of data
+	scatter!(ga, stations.longitude, stations.latitude;
+		color = stations.years_of_data, colormap = :viridis, markersize = 4, alpha = 0.7,
+		label = "All stations")  # <3>
+
+	# Plot nearest stations with distinct colors
+	colors = ColorSchemes.Set1_5
+	scatter!(ga, nearest_stations.longitude, nearest_stations.latitude,
+		color = colors[1:length(nearest_stations.longitude)],
+		markersize = 12, strokewidth = 2, strokecolor = :black,
+		label = "Analysis stations")  # <4>
+
+	# Highlight the chosen station
+	scatter!(ga, [my_station.longitude], [my_station.latitude],
+		color = :gold, markersize = 15, marker = :star5,
+		strokewidth = 2, strokecolor = :black,
+		label = "My station")  # <5>
+
+	# Set plot bounds based on data bounds plus padding
+	delta = 0.3  # <6>
+	min_lon, max_lon = extrema(stations.longitude)
+	min_lat, max_lat = extrema(stations.latitude)
+
+	xlims!(ga, min_lon - delta, max_lon + delta)
+	ylims!(ga, min_lat - delta, max_lat + delta)
+
+	# Add colorbar for years of data
+	Colorbar(fig[1, 2], label = "Years of Data", colormap = :viridis,
+		limits = (minimum(stations.years_of_data), maximum(stations.years_of_data)))  # <7>
+
+	axislegend(ga, position = :lt)
+	return fig
+end
+
+plot_station_map(my_station, nearest_stations)
+```
+
+1. Create geographic axis with map projection (lat/lon to Mercator)
+2. Load and display US state boundaries for geographic context
+3. Plot all stations as small dots, colored by years of available data
+4. Highlight the 5 nearest stations with larger, distinct colored markers
+5. Mark your chosen station with a gold star for clear identification
+6. Set map bounds with padding around all station locations
+7. Add colorbar showing the years of data scale
+
+Now let's compare the GEV fits across these stations:
+
+```{julia}
+function plot_multi_station_comparison(station_fits, station_info)
+	fig = Figure(size = (900, 600))
+	ax = Axis(fig[1, 1],
+		xlabel = "Return Period (years)",
+		ylabel = "Return Level (inches)",
+		title = "Multi-Station GEV Comparison",
+		xscale = log10)
+
+	colors = ColorSchemes.Set1_5  # <1>
+	T_smooth = create_return_period_range(1.1, 250, 100)  # <2>
+
+	for (i, (dist, info)) in enumerate(zip(station_fits, station_info))
+		# Plot return levels using quantile function
+		levels = [quantile(dist, 1 - 1 / T) for T in T_smooth]  # <3>
+
+		lines!(ax, T_smooth, levels,
+			color = colors[i], linewidth = 2,
+			label = "$(info.noaa_id) ($(info.n_years) yrs)")  # <4>
+	end
+
+	return_periods = [5, 10, 25, 50, 100]
+	ax.xticks = return_periods
+	axislegend(ax, position = :rb)
+
+	return fig
+end
+
+plot_multi_station_comparison(station_fits, station_info)
+```
+
+1. Use distinct color scheme for different stations
+2. Create smooth range of return periods for plotting
+3. Calculate return levels for each station's fitted GEV distribution
+4. Plot each station with unique color, labeled with station ID and years of data
+
+::: {.callout-note}
+## Response 3
+Analyze the spatial patterns in your multi-station comparison. Address whether the station similarities or differences are credible, what this reveals about spatial variability in extreme precipitation, and how geographical factors (elevation, proximity to coast, urban effects, etc.) might explain the patterns you observe.
+:::
+
+## Uncertainty Analysis: Synthetic Experiment
+
+Understanding parameter uncertainty is crucial for risk assessment. Let's explore how sample size affects GEV parameter estimation through a controlled experiment.
+
+### Setting Up the Synthetic Experiment
+
+```{julia}
+using Random
+Random.seed!(543)  # <1>
+
+# Define "true" GEV parameters for our synthetic data
+true_μ = 4.0    # <2>
+true_σ = 1.2    # <3>
+true_ξ = 0.1    # <4>
+
+true_gev = GeneralizedExtremeValue(true_μ, true_σ, true_ξ)  # <5>
+
+# Display true parameters in a DataFrame
+true_params = DataFrame(
+	Parameter = ["Location (μ)", "Scale (σ)", "Shape (ξ)"],
+	Value = [true_μ, true_σ, true_ξ],
+)
+println("True GEV parameters:")
+true_params
+```
+
+1. Set random seed for reproducible synthetic data generation
+2. True location parameter (center of the distribution)
+3. True scale parameter (spread of the distribution)
+4. True shape parameter (tail heaviness, positive = heavy tail)
+5. Create the "true" GEV distribution for generating synthetic data
+
+### Running the Experiment
+
+For each sample size, we'll generate synthetic data, fit GEV parameters, and repeat this process many times:
+
+```{julia}
+# Experimental setup
+sample_sizes = [30, 50, 100]  # <1>
+n_replicates = 500            # <2>
+return_period = 100           # <3>
+
+# Storage for results
+experiment_results = Dict()
+
+for n in sample_sizes
+	# Storage for this sample size
+	fitted_params = []
+	return_levels = []
+
+	for rep in 1:n_replicates
+		# Generate synthetic data
+		synthetic_data = rand(true_gev, n)  # <4>
+
+		# Fit GEV using gevfit (faster for synthetic experiments)
+		try
+			fit = gevfit(synthetic_data)  # <5>
+
+			# Extract parameters
+			μ_fit = location(fit)[1]
+			σ_fit = scale(fit)[1]
+			ξ_fit = shape(fit)[1]
+
+			# Calculate 100-year return level
+			fitted_dist = GeneralizedExtremeValue(μ_fit, σ_fit, ξ_fit)
+			rl_100 = quantile(fitted_dist, 1 - 1 / return_period)  # <6>
+
+			# Store results
+			push!(fitted_params, (μ = μ_fit, σ = σ_fit, ξ = ξ_fit))
+			push!(return_levels, rl_100)
+
+		catch e
+			# Skip failed fits (can happen with synthetic data)
+			continue  # <7>
+		end
+	end
+
+	experiment_results[n] = (params = fitted_params, return_levels = return_levels)
+end
+```
+
+1. Sample sizes to test (years of synthetic data)
+2. Number of Monte Carlo replications for each sample size
+3. Focus analysis on 100-year return level estimates
+4. Generate n random samples from the true GEV distribution
+5. Fit GEV parameters to each synthetic dataset
+6. Calculate 100-year return level from fitted parameters
+7. Skip any fits that fail due to numerical issues
+
+We can now visualize this
+
+```{julia}
+function plot_uncertainty_experiment(experiment_results, true_gev, return_period)
+	fig = Figure(size = (1200, 800))
+
+	# Calculate true 100-year return level for reference
+	true_rl_100 = quantile(true_gev, 1 - 1 / return_period)  # <1>
+
+	sample_sizes = [30, 50, 100]
+	colors = [:blue, :red, :green]
+
+	# Top row: Histograms of 100-year return levels for each sample size
+	top_axes = []  # Store axes for linking
+	for (i, n) in enumerate(sample_sizes)
+		ax_top = Axis(fig[1, i],
+			xlabel = "100-Year Return Level (inches)",
+			ylabel = i == 1 ? "Frequency" : "",
+			title = "N = $n years",
+			yticklabelsvisible = i == 1)  # <2>
+
+		return_levels = experiment_results[n].return_levels
+
+		# Create histogram
+		hist!(ax_top, return_levels, bins = 15, color = (colors[i], 0.7),
+			strokewidth = 1, strokecolor = colors[i])  # <3>
+
+		# Add true value line
+		vlines!(ax_top, [true_rl_100], color = :black, linestyle = :dash, linewidth = 2)  # <4>
+
+		push!(top_axes, ax_top)
+	end
+
+	# Link x-axes for top row only
+	linkxaxes!(top_axes...)  # <5>
+
+	# Bottom row: Return period curves for each sample size
+	T_smooth = create_return_period_range(2, 250, 50)  # <6>
+	true_levels = [quantile(true_gev, 1 - 1 / T) for T in T_smooth]  # <7>
+
+	bottom_axes = []  # Store axes for linking
+	for (i, n) in enumerate(sample_sizes)
+		ax_bottom = Axis(fig[2, i],
+			xlabel = "Return Period (years)",
+			ylabel = i == 1 ? "Return Level (inches)" : "",
+			xscale = log10,
+			yticklabelsvisible = i == 1)  # <8>
+
+		# Plot true curve
+		lines!(ax_bottom, T_smooth, true_levels, color = :black, linewidth = 3, label = "True GEV")
+
+		# Plot fitted curves for this sample size
+		params = experiment_results[n].params
+
+		for (j, p) in enumerate(params)
+			if j <= 30  # Plot first 30 to show uncertainty  # <9>
+				fitted_dist = GeneralizedExtremeValue(p.μ, p.σ, p.ξ)
+				levels = [quantile(fitted_dist, 1 - 1 / T) for T in T_smooth]
+				lines!(ax_bottom, T_smooth, levels,
+					color = colors[i], alpha = 0.2, linewidth = 1)
+			end
+		end
+
+		# Set consistent x-axis
+		return_periods = [5, 10, 25, 50, 100, 250]
+		ax_bottom.xticks = return_periods
+
+		# Add legend only to first plot
+		if i == 1
+			axislegend(ax_bottom, position = :rb)
+		end
+
+		push!(bottom_axes, ax_bottom)
+	end
+
+	# Link y-axes for bottom row
+	linkyaxes!(bottom_axes...)  # <10>
+
+	return fig
+end
+
+plot_uncertainty_experiment(experiment_results, true_gev, return_period)
+```
+
+1. Calculate the true 100-year return level for reference
+2. Show y-axis labels only on the leftmost histogram
+3. Create histogram of 100-year return level estimates
+4. Add vertical line showing the true 100-year return level
+5. Link x-axes so all histograms have the same x-range
+6. Create return period range for plotting curves
+7. Calculate true return levels across all return periods
+8. Show y-axis labels only on the leftmost curve plot
+9. Plot subset of fitted curves to show uncertainty without cluttering
+10. Link y-axes so all curve plots have the same y-range
+
+::: {.callout-note}
+## Response 4
+What sample size would you consider adequate for reliable GEV parameter estimation?
+How does this synthetic experiment inform your interpretation of the real station analyses from earlier in the lab?
+Is the uncertainty observed in this experiment an upper or a lower bound for the uncertainty in real-world applications, and why?
+:::
+
+::: {.callout-note}
+## Response 5
+Synthesize your key findings from all analyses and discuss the broader implications for infrastructure design and climate risk assessment.
+:::
+
