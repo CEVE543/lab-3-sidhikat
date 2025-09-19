@@ -45,48 +45,27 @@ code-line-numbers: false
 code-block-font-size: "0.85em"
 ---
 
-## Do Before Lab {.unnumbered}
-
-1. **Accept the assignment.** Use the GitHub Classroom link posted on Canvas to "accept" the assignment, which will give you your own GitHub repository.
-1. **Clone your repository** to your computer using GitHub Desktop or the command line.
-1. **Open the repository in VS Code** directly from VS Code, GitHub Desktop, or your command line.
-1. **Activate the Julia environment.** In VS Code, open the command palette (View → Command Palette) and type "Julia: Start REPL". Alternatively, run `julia --project=.` in the terminal, then run `using Pkg; Pkg.instantiate()` to install required packages. The easiest method is to type `]` in the REPL to enter package mode, then type `instantiate`.
-1. **Verify rendering works.** Run `quarto render index.qmd` in your terminal - it should create both PDF and HTML documents.
-
-## Do During Lab {.unnumbered}
-
-This lab guides you through comparing Bayesian and traditional approaches to GEV parameter estimation:
-
-1. **Choose and analyze a station** with adequate data for GEV fitting
-1. **Compare fitting methods** using both Extremes.jl and Turing.jl 
-1. **Analyze multiple stations** by incorporating nearby stations into your analysis
-1. **Explore uncertainty** through a synthetic data experiment
-
-As with previous labs, you do not need to write code from scratch -- just modify and run provided code.
-
-To submit your work, push your changes to GitHub, render to PDF, and upload the PDF to Canvas.
-
 ## Your Analysis {.unnumbered}
 
-::: {.callout-important}
-## Instructions
-Delete this entire section (including the "Do Before Lab" and "Do During Lab" sections above) and replace it with your analysis responses. Use the numbered format below for your final submission.
-:::
-
 **Response 1:** Station Selection Rationale  
-*Replace this text with 2-3 sentences explaining why you chose your particular station for GEV analysis. Address factors like data length, location relevance, and data quality.*
+
+I selected Galveston as my station because it was in the top 10 list of years of longest data available, with 146 years of data, and it has very few missing data points. I also wanted to choose a data station with higher rainfall amounts and I know that Galveston is closer to the coast and has cases of extreme rainfall. 
 
 **Response 2:** Fitting Methods Comparison  
-*Replace this text with 3-4 sentences comparing the Extremes.jl and Turing.jl approaches. Discuss parameter differences, return level estimates, and potential reasons for any discrepancies.*
+
+The Turing.jl MLE and Extremes.JL MLE have exactly the same values for all parameters. Since we used very wide priors for the Bayesian model, it makes sense that it behaves like an MLE method. The PWM method has a higher return level than the MLE methods in a 5 year return, but then lower values in the 10,25,50,100 return periods. This is probably because PWM has a sligthly higher $\xi$ value, which means it's tail is heavier and indicates that there is a higher probablity of extreme events. 
 
 **Response 3:** Multi-Station Geographic Analysis  
-*Replace this text with 4-5 sentences analyzing the spatial patterns in your multi-station comparison. Address the credibility of similarities/differences and explain how geographic factors might influence extreme precipitation patterns.*
+
+The GEV curves for all the nearby stations are very similair, with slightly different tails. It makes sense that most of the curve is similair given that they are all near the coast and have similair rainfall patterns. Galveston has a GEV curve with the lowest tail, which I think is due to the amount of data the station has. The Galveston station has 107 years of data, while all the other stations only have 30-40. The difference in the curve could also be due to qualtily of data collection or slight topographical differences. 
 
 **Response 4:** Uncertainty and Sample Size Insights  
-*Replace this text with 3-4 sentences interpreting your synthetic experiment results. Discuss adequate sample sizes for reliable GEV estimation and implications for infrastructure design.*
+
+Based on the experiment, I would want at least 100 years of data for a reliable GEV parameter estimation. This experiment shows that I cannot be confident in the GEV curve for the surrounding stations because they only had 30-40 years of data. And even Galveston had only 107 years of data, which is in the lower end of what is reliable. The uncertainty in this experiment is a lower bound because I could expect more uncertainties in real-world applicationds due to measurement errors or gaps in data collection. 
 
 **Response 5:** Final Synthesis  
-*Replace this text with 2-3 sentences synthesizing your key findings and their broader implications for climate risk assessment and engineering applications.*
+
+Some key findings are that long-term results are necessary in order to make a reliable GEV estimation. And while nearby stations can be helpful in providing context, they can prove to have different results due to data length and location-dependent weather variability. This implies that it is very important to account for statistical uncertainty and have long, complete datasets in order to make confident real-world climate risk assesments. 
 
 ## Data Setup and Station Selection
 
@@ -110,7 +89,7 @@ using GeoMakie
 using Makie.Unitful
 using Makie.Dates
 
-ENV["DATAFRAMES_ROWS"] = 5
+ENV["DATAFRAMES_ROWS"] = 10
 
 # Configure plotting backend
 CairoMakie.activate!(type = "svg")
@@ -162,7 +141,7 @@ end
 
 ```{julia}
 # REQUIRED: You MUST choose a different station than the default
-my_stnid = 111
+my_stnid = 779
 
 my_station = @chain stations begin
 	@filter(stnid == !!my_stnid)
